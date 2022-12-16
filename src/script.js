@@ -1,54 +1,268 @@
-
-
 import * as THREE from 'three';
+import './style.css';
 
-let camera, scene, renderer, clock, dataTexture, diffuseMap;
+import {GUI} from "dat.gui";
 
-let last = 0;
-const position = new THREE.Vector2();
-const color = new THREE.Color();
+import Stats from "three/examples/jsm/libs/stats.module";
+import {OrbitControls} from "three/examples/jsm/controls/OrbitControls";
+import {GLTFLoader} from "three/examples/jsm/loaders/GLTFLoader";
+import {DecalGeometry} from "three/examples/jsm/geometries/DecalGeometry";
+
+const container = document.getElementById( 'container' );
+
+let renderer, scene, camera, stats;
+let mesh;
+let raycaster;
+let line;
+var testValue = 1;
+
+const intersection = {
+    intersects: false,
+    point: new THREE.Vector3(),
+    normal: new THREE.Vector3()
+};
+const mouse = new THREE.Vector2();
+const intersects = [];
+
+const textureLoader = new THREE.TextureLoader();
+const decalDiffuse = textureLoader.load( 'textures/decal/decal-diffuse2.png' );
+const decalNormal = textureLoader.load( 'textures/decal/decal-normal.jpg' );
+
+const decalMaterial = new THREE.MeshPhongMaterial( {
+    specular: 0x444444,
+    map: decalDiffuse,
+    normalMap: decalNormal,
+    normalScale: new THREE.Vector2( 1, 1 ),
+    shininess: 0,
+    transparent: false,
+    depthTest: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: - 4,
+    wireframe: false
+} );
+
+let decals = null;
+let mouseHelper;
+const position = new THREE.Vector3();
+const orientation = new THREE.Euler();
+const size = new THREE.Vector3( 10, 10, 10 );
+
+const params = {
+    scale: 1,
+    rotate: false,
+    clear: function () {
+        removeDecals();
+    },
+    move: function () {
+        moveDecals();
+    }
+};
 
 init();
+animate();
 
 function init() {
-
-    camera = new THREE.PerspectiveCamera( 70, window.innerWidth / window.innerHeight, 0.01, 10 );
-    camera.position.z = 2;
-
-    scene = new THREE.Scene();
-
-    clock = new THREE.Clock();
-
-    const loader = new THREE.TextureLoader();
-    diffuseMap = loader.load( 'textures/floors/FloorsCheckerboard_S_Diffuse.jpg', animate );
-    diffuseMap.minFilter = THREE.LinearFilter;
-    diffuseMap.generateMipmaps = false;
-
-    const geometry = new THREE.PlaneGeometry( 2, 2 );
-    const material = new THREE.MeshBasicMaterial( { map: diffuseMap } );
-
-    const mesh = new THREE.Mesh( geometry, material );
-    scene.add( mesh );
-
-    //
-
-    const width = 32;
-    const height = 32;
-
-    const data = new Uint8Array( width * height * 4 );
-    dataTexture = new THREE.DataTexture( data, width, height );
-
-    //
 
     renderer = new THREE.WebGLRenderer( { antialias: true } );
     renderer.setPixelRatio( window.devicePixelRatio );
     renderer.setSize( window.innerWidth, window.innerHeight );
-    document.body.appendChild( renderer.domElement );
+    container.appendChild( renderer.domElement );
 
-    //
+    stats = new Stats();
+    container.appendChild( stats.dom );
+
+    scene = new THREE.Scene();
+
+    camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 1000 );
+    camera.position.z = 120;
+
+    const controls = new OrbitControls( camera, renderer.domElement );
+    controls.minDistance = 50;
+    controls.maxDistance = 200;
+
+    scene.add( new THREE.AmbientLight( 0x443333 ) );
+
+    const dirLight1 = new THREE.DirectionalLight( 0xffddcc, 1 );
+    dirLight1.position.set( 1, 0.75, 0.5 );
+    scene.add( dirLight1 );
+
+    const dirLight2 = new THREE.DirectionalLight( 0xccccff, 1 );
+    dirLight2.position.set( - 1, 0.75, - 0.5 );
+    scene.add( dirLight2 );
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setFromPoints( [ new THREE.Vector3(), new THREE.Vector3() ] );
+
+    line = new THREE.Line( geometry, new THREE.LineBasicMaterial() );
+    scene.add( line );
+
+    loadLeePerrySmith();
+
+    raycaster = new THREE.Raycaster();
+
+    mouseHelper = new THREE.Mesh( new THREE.BoxGeometry( 1, 1, 10 ), new THREE.MeshNormalMaterial() );
+    mouseHelper.visible = false;
+    scene.add( mouseHelper );
 
     window.addEventListener( 'resize', onWindowResize );
 
+    let moved = false;
+
+    controls.addEventListener( 'change', function () {
+        moved = true;
+    } );
+
+    window.addEventListener( 'pointerdown', function () {
+
+        moved = false;
+
+    } );
+
+    window.addEventListener( 'pointerup', function ( event ) {
+
+        if ( moved === false ) {
+
+            checkIntersection( event.clientX, event.clientY );
+
+            if ( intersection.intersects ) shoot();
+
+        }
+
+    } );
+
+    window.addEventListener( 'pointermove', onPointerMove );
+
+    function onPointerMove( event ) {
+
+        if ( event.isPrimary ) {
+
+            checkIntersection( event.clientX, event.clientY );
+
+        }
+
+    }
+
+    function checkIntersection( x, y ) {
+
+        if ( mesh === undefined ) return;
+
+        mouse.x = ( x / window.innerWidth ) * 2 - 1;
+        mouse.y = - ( y / window.innerHeight ) * 2 + 1;
+
+        raycaster.setFromCamera( mouse, camera );
+        raycaster.intersectObject( mesh, false, intersects );
+
+        if ( intersects.length > 0 ) {
+
+            const p = intersects[ 0 ].point;
+            mouseHelper.position.copy( p );
+            intersection.point.copy( p );
+
+            const n = intersects[ 0 ].face.normal.clone();
+            n.transformDirection( mesh.matrixWorld );
+            n.multiplyScalar( 10 );
+            n.add( intersects[ 0 ].point );
+
+            intersection.normal.copy( intersects[ 0 ].face.normal );
+            mouseHelper.lookAt( n );
+
+            const positions = line.geometry.attributes.position;
+            positions.setXYZ( 0, p.x, p.y, p.z );
+            positions.setXYZ( 1, n.x, n.y, n.z );
+            positions.needsUpdate = true;
+
+            intersection.intersects = true;
+
+            intersects.length = 0;
+
+        } else {
+
+            intersection.intersects = false;
+
+        }
+
+    }
+
+    const gui = new GUI();
+
+    gui.add( params, 'scale', 1, 30 );
+    gui.add( params, 'rotate' );
+    gui.add( params, 'clear' );
+    gui.add( params, 'move' );
+    gui.open();
+
+    var testValue = 1;
+    const button = document.getElementById('left');
+    button.addEventListener('click', () => {
+        moveDecals(1, 2, 3);
+    });
+}
+
+function loadLeePerrySmith() {
+
+    const loader = new GLTFLoader();
+
+    loader.load( 'models/gltf/Shirt.glb', function ( gltf ) {
+
+        mesh = gltf.scene.children[1];
+        console.log(mesh)
+        mesh.material = new THREE.MeshPhongMaterial( {
+            specular: 0x111111,
+            map: textureLoader.load( 'models/gltf/Shirt_UV.png' ),
+            //specularMap: textureLoader.load( 'models/gltf/Map-SPEC.jpg' ),
+            //normalMap: textureLoader.load( 'models/gltf/Infinite-Level_02_Tangent_SmoothUV.jpg' ),
+            shininess: 25
+        } );
+
+        scene.add( mesh );
+
+        mesh.scale.set( 1000, 1000, 1000 );
+
+    } );
+
+}
+
+function shoot() {
+
+    removeDecals()
+    position.copy( intersection.point );
+    orientation.copy( mouseHelper.rotation );
+
+    if ( params.rotate ) orientation.z = Math.random() * 2 * Math.PI;
+
+    const scale = params.scale;
+    size.set( scale, scale, scale );
+
+    const material = decalMaterial.clone();
+    //material.color.setHex( Math.random() * 0xffffff );
+
+    decals = new THREE.Mesh( new DecalGeometry( mesh, position, orientation, size ), material );
+
+    scene.add( decals );
+
+}
+
+function removeDecals() {
+
+    scene.remove(decals);
+
+}
+function moveDecals(value1, value2, value3) {
+    console.log(decals)
+    const decalsOld = decals;
+
+    //removeDecals();
+
+    console.log(decalsOld)
+
+    decalsOld.forEach( function ( d ) {
+
+        scene.add( d );
+
+    } );
+
+   // decals.length = 0;
 }
 
 function onWindowResize() {
@@ -64,52 +278,10 @@ function animate() {
 
     requestAnimationFrame( animate );
 
-    const elapsedTime = clock.getElapsedTime();
-
-    if ( elapsedTime - last > 0.1 ) {
-
-        last = elapsedTime;
-
-        position.x = ( 32 * THREE.MathUtils.randInt( 1, 16 ) ) - 32;
-        position.y = ( 32 * THREE.MathUtils.randInt( 1, 16 ) ) - 32;
-
-        // generate new color data
-
-        updateDataTexture( dataTexture );
-
-        // perform copy from src to dest texture to a random position
-
-        renderer.copyTextureToTexture( position, dataTexture, diffuseMap );
-
-    }
-
     renderer.render( scene, camera );
 
-}
-
-function updateDataTexture( texture ) {
-
-    const size = texture.image.width * texture.image.height;
-    const data = texture.image.data;
-
-    // generate a random color and update texture data
-
-    color.setHex( Math.random() * 0xffffff );
-
-    const r = Math.floor( color.r * 255 );
-    const g = Math.floor( color.g * 255 );
-    const b = Math.floor( color.b * 255 );
-
-    for ( let i = 0; i < size; i ++ ) {
-
-        const stride = i * 4;
-
-        data[ stride ] = r;
-        data[ stride + 1 ] = g;
-        data[ stride + 2 ] = b;
-        data[ stride + 3 ] = 1;
-
-    }
+    stats.update();
 
 }
 
+		
